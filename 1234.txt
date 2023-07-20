@@ -1,0 +1,157 @@
+
+int inode_get_size(inode* node) {
+    return node->size;
+}
+
+void inode_set_size(inode* node, int size) {
+    node->size = size;
+    inode_flush(node);
+}
+
+// allocate block for file at given offset
+int inode_alloc_block(inode* node, int offset) {
+    // calculate block number from offset
+    int block_num = offset / BLOCK_SIZE;
+
+    // if block number is less than direct pointers
+    if (block_num < 10) {
+        // allocate direct block
+        if (node->ptrs[block_num] == 0) {
+            node->ptrs[block_num] = bitmap_find_and_set();
+        }
+        return node->ptrs[block_num];
+    }
+
+    // if block number is greater than or equal to direct pointers
+    // allocate indirect block
+    if (node->iptr == 0) {
+        node->iptr = bitmap_find_and_set();
+    }
+
+    // read indirect block from disk
+    int* indirect = (int*) block_read(node->iptr);
+
+    // allocate indirect block
+    if (indirect[block_num - 10] == 0) {
+        indirect[block_num - 10] = bitmap_find_and_set();
+        block_write(node->iptr, indirect);
+    }
+
+    // release indirect block from memory
+    free(indirect);
+
+    // return allocated block number
+    return indirect[block_num - 10];
+}
+
+// deallocate block for file at given offset
+void inode_dealloc_block(inode* node, int offset) {
+    // calculate block number from offset
+    int block_num = offset / BLOCK_SIZE;
+
+    // if block number is less than direct pointers
+    if (block_num < 10) {
+        // deallocate direct block
+        if (node->ptrs[block_num] != 0) {
+            bitmap_reset(node->ptrs[block_num]);
+            node->ptrs[block_num] = 0;
+        }
+        return;
+    }
+
+    // if block number is greater than or equal to direct pointers
+    // deallocate indirect block
+    if (node->iptr == 0) {
+        return;
+    }
+
+    // read indirect block from disk
+    int* indirect = (int*) block_read(node->iptr);
+
+    // deallocate indirect block
+    if (indirect[block_num - 10] != 0) {
+        bitmap_reset(indirect[block_num - 10]);
+        indirect[block_num - 10] = 0;
+        block_write(node->iptr, indirect);
+    }
+
+    // release indirect block from memory
+    free(indirect);
+}
+
+
+
+
+#include <stdio.h>
+#include <stdlib.h>
+
+#define BLOCK_SIZE 4096
+#define MAX_EXTENT_BLOCKS 1024
+
+typedef struct extent {
+    unsigned long long start_block;
+    unsigned int num_blocks;
+} extent_t;
+
+typedef struct file {
+    extent_t extents[10]; // Maximum 10 extents per file
+    unsigned int num_extents;
+    unsigned long long size;
+} file_t;
+
+int main() {
+    char *disk = (char *)malloc(1024 * 1024 * 1024); // 1 GB disk
+    char *bitmap = (char *)malloc(1024 * 1024); // Bitmap for 4 GB disk
+
+    // Initialize bitmap with all blocks as free
+    for (int i = 0; i < 1024 * 1024; i++) {
+        bitmap[i] = 0;
+    }
+
+    // Create a new file
+    file_t file;
+    file.num_extents = 0;
+    file.size = 0;
+
+    // Allocate extents for the file
+    for (int i = 0; i < 128; i++) {
+        extent_t extent;
+        extent.start_block = 0;
+        extent.num_blocks = 0;
+
+        // Find a free range of blocks for the extent
+        int start_block = 0;
+        int num_blocks = 0;
+        for (int j = 0; j < 1024 * 1024; j++) {
+            if (!bitmap[j]) {
+                num_blocks++;
+            } else {
+                start_block = j + 1;
+                num_blocks = 0;
+            }
+            if (num_blocks == MAX_EXTENT_BLOCKS) {
+                break;
+            }
+        }
+
+        if (num_blocks == MAX_EXTENT_BLOCKS) {
+            // Found a free range of blocks for the extent
+            extent.start_block = start_block;
+            extent.num_blocks = MAX_EXTENT_BLOCKS;
+            file.extents[file.num_extents++] = extent;
+
+            // Mark the blocks as used in the bitmap
+            for (int j = start_block; j < start_block + MAX_EXTENT_BLOCKS; j++) {
+                bitmap[j] = 1;
+            }
+            file.size += MAX_EXTENT_BLOCKS * BLOCK_SIZE;
+        } else {
+            // Could not find a free range of blocks for the extent
+            break;
+        }
+    }
+
+    // Write to the file
+    char data[500 * 1024]; // 500K data
+    for (int i = 0; i < 500 * 1024; i++)
+
